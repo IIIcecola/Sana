@@ -485,10 +485,10 @@ def train(
                 
                 # Face Identity Loss (noly for video data with reference frame)
                 if (
-                    face_loss_fn in not None
+                    face_loss_fn is not Nones
                     and is_video_data
                     and not load_vae_feat    # only compute if VAE is available
-                    and oonfig.train.ltx_image_condition_prob > 0    # TI2V mode
+                    and config.train.ltx_image_condition_prob > 0    # TI2V mode
                     and global_step % config.train.face_loss_interval == 0
                     and timesteps[0].item() < config.train.face_loss_t_threshold
                 ):
@@ -522,7 +522,7 @@ def train(
                         ref_pixel = vae_decode(
                             config.vae.vae_type,
                             vae,
-                            pred_x0_subset.permute(0, 2, 1, 3, 4)    # (B, C, F, H, W) -> (B, F, C, H, W)
+                            ref_x0.permute(0, 2, 1, 3, 4)    # (B, C, F, H, W) -> (B, F, C, H, W)
                         )    # (B, C, H, W)
 
                         vae_decode_time = time.time() - vae_decode_start
