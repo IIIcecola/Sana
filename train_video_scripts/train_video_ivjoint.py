@@ -482,7 +482,74 @@ def train(
                             loss_term["tc"] = tc_loss.detach()
                     except Exception:
                         pass
+                
+                # Face Identity Loss (noly for video data with reference frame)
+                if (
+                    face_loss_fn in not None
+                    and is_video_data
+                    and not load_vae_feat    # only compute if VAE is available
+                    and oonfig.train.ltx_image_condition_prob > 0    # TI2V mode
+                    and global_step % config.train.face_loss_interval == 0
+                    and timesteps[0].item() < config.train.face_loss_t_threshold
+                ):
+                    try:
+                        # Get predicted and reference frames
+                        model_output = loss_term["output"]
+                        x_t = loss_term["x_t"]
 
+                        # predict x0 (clean latents)
+                        pred_x0 = x_t - timesteps.view(-1, 1, 1, 1, 1) / 1000.0 * model_output
+
+                        # get reference frame (first frame)
+                        ref_x0 = clean_images[:, :, 0:1]    # (B, C, 1, H, W)
+
+                        # VAE decode to pixel space
+                        # use smaller batch size to avoid OOM
+                        vae_decode_start = time.time()
+
+                        # decode predicted frames (all frames or subset)
+                        num_frame_to_decode = min(pred_x0.shape[2], 5)    # decode up to 5 frames
+                        pred_x0_subset = pred_x0[:, :, :num_frame_to_decode]       # (B, C, F, H, W)
+
+                        # decode predicted frames
+                        pred_pixel = vae_decode(
+                            config.vae.vae_type,
+                            vae,
+                            pred_x0_subset.permute(0, 2, 1, 3, 4)    # (B, C, F, H, W) -> (B, F, C, H, W)
+                        )    # (B*F, C, H, W)
+
+                        # decode reference frame
+                        ref_pixel = vae_decode(
+                            config.vae.vae_type,
+                            vae,
+                            pred_x0_subset.permute(0, 2, 1, 3, 4)    # (B, C, F, H, W) -> (B, F, C, H, W)
+                        )    # (B, C, H, W)
+
+                        vae_decode_time = time.time() - vae_decode_start
+
+                        # compute face loss
+                        face_loss_start = time.time()
+                        face_loss = face_loss_fn(
+                            pred_pixel = pred_pixel,
+                            ref_pixel = ref_pixel,
+                            batch_id = global_step,
+                        )
+                        face_loss_time = time.time() - face_loss_start
+
+                        # add to total loss
+                        if face_loss.item() > 0:    # only add if faces were detected
+                            loss = loss + config.train.face_loss_weight * face_loss
+                            loss_term["face"] = face_loss.detach()
+
+                            # log timing
+                            if global_step == 0:
+                                logger.info(f"[face loss] step {global_step}: face_loss={face_loss.item():.4f}, "
+                                            f"vae_decode={vae_decode_time:.3f}s, face_extract={face_loss_time:.3f}s")
+                    except Exception as e:
+                        logger.warning(f"[face loss] step {global_step}: failed to compute face loss: {e}")
+
+                                        
+                
                 accelerator.backward(loss)
 
                 if accelerator.sync_gradients:
